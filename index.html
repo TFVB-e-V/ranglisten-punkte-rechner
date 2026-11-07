@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TFVB Ranglistenpunkte-Rechner</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --text: #1c2128;
+    --muted: #5b6573;
+    --border: #d5dae1;
+    --accent: #0b6b4f;
+    --error: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b;
+      --surface: #1d2126;
+      --text: #e8eaed;
+      --muted: #a0a9b5;
+      --border: #363c45;
+      --accent: #4cc39a;
+      --error: #f2857d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 48px;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 20px; }
+  .field { margin-bottom: 16px; }
+  label { display: block; font-weight: 600; margin-bottom: 4px; }
+  select, input {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: inherit;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .hint { margin: 4px 0 0; font-size: 0.875rem; color: var(--muted); }
+  .error { margin: 4px 0 0; font-size: 0.875rem; color: var(--error); }
+  .note { margin: 24px 0 8px; font-size: 0.875rem; color: var(--muted); }
+  table {
+    width: 100%;
+    margin-top: 24px;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+  }
+  .note + table { margin-top: 0; }
+  th, td { padding: 8px 16px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { position: sticky; top: 0; background: var(--surface); box-shadow: 0 1px 0 var(--border); }
+  tbody tr:last-child td { border-bottom: 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TFVB Ranglistenpunkte-Rechner</h1>
+
+  <form id="form" novalidate autocomplete="off">
+    <div class="field">
+      <label for="type">Turnierart</label>
+      <select id="type">
+        <option value="">Bitte wählen</option>
+      </select>
+    </div>
+
+    <div class="field" id="category-field" hidden>
+      <label for="category">Kategorie</label>
+      <select id="category"></select>
+    </div>
+
+    <div class="field">
+      <label for="participants">Anzahl Teilnehmer</label>
+      <input id="participants" type="number" inputmode="numeric" min="1" max="512" step="1">
+      <p class="hint">Im Doppel die Anzahl der Teams, im Einzel die Anzahl der Spieler.</p>
+      <p class="error" id="participants-error" hidden></p>
+    </div>
+  </form>
+
+  <div id="result" hidden>
+    <p class="note" id="note" hidden></p>
+    <table>
+      <thead>
+        <tr><th scope="col">Platz</th><th scope="col">Punkte</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+  const MIN_PARTICIPANTS = 1;
+  const MAX_PARTICIPANTS = 512;
+  const GLOBAL_FACTOR = 1.0;
+
+  // Turniere ohne Kategorien haben "rules" direkt, alle anderen je Kategorie.
+  const TOURNAMENTS = {
+    mini: {
+      label: "Mini-Challenger",
+      rules: { m: 0.5, tmin: 10, tmax: 40 },
+    },
+    challenger: {
+      label: "Challenger",
+      categories: {
+        offen:    { label: "Offen",    m: 1.0, tmin: 20, tmax: 90 },
+        damen:    { label: "Damen",    m: 1.0, tmin: 5,  tmax: 25 },
+        senioren: { label: "Senioren", m: 1.3, tmin: 5,  tmax: 25 },
+        junioren: { label: "Junioren", m: 1.0, tmin: 5,  tmax: 25 },
+        mixed:    { label: "Mixed",    m: 1.0, tmin: 20, tmax: 90 },
+      },
+    },
+    itsf: {
+      label: "ITSF",
+      categories: {
+        offen:    { label: "Offen",    m: 1.3, tmin: 20, tmax: 150 },
+        damen:    { label: "Damen",    m: 1.3, tmin: 5,  tmax: 40 },
+        senioren: { label: "Senioren", m: 1.7, tmin: 5,  tmax: 40 },
+      },
+    },
+  };
+
+  function countedParticipants(n, { tmin, tmax }) {
+    return Math.max(Math.min(n, tmax), tmin);
+  }
+
+  function points(p, n, rules) {
+    // Bei nur einem Teilnehmer ergibt die Formel 0/0; der TFVB vergibt hier 1 Punkt.
+    if (n === 1) return 1;
+    const base = 10 * Math.pow(countedParticipants(n, rules), 0.6);
+    const curve = (p - n) * Math.log(p / n) / ((1 - n) * Math.log(1 / n));
+    return Math.max(1, Math.round(base * curve * rules.m * GLOBAL_FACTOR));
+  }
+
+  const typeSelect = document.getElementById("type");
+  const categoryField = document.getElementById("category-field");
+  const categorySelect = document.getElementById("category");
+  const participantsInput = document.getElementById("participants");
+  const participantsError = document.getElementById("participants-error");
+  const result = document.getElementById("result");
+  const note = document.getElementById("note");
+  const rows = document.getElementById("rows");
+
+  function addOption(select, value, label) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  }
+
+  function selectedRules() {
+    const tournament = TOURNAMENTS[typeSelect.value];
+    if (!tournament) return null;
+    return tournament.rules ?? tournament.categories[categorySelect.value] ?? null;
+  }
+
+  // Liefert die Teilnehmerzahl oder null und zeigt ggf. die Fehlermeldung an.
+  function readParticipants() {
+    const raw = participantsInput.value.trim();
+    const n = Number(raw);
+    const valid = Number.isInteger(n) && n >= MIN_PARTICIPANTS && n <= MAX_PARTICIPANTS;
+    // Ein unparsbares Zahlenfeld meldet value "", aber badInput true.
+    const showError = participantsInput.validity.badInput || (raw !== "" && !valid);
+    participantsError.textContent =
+      `Bitte eine ganze Zahl von ${MIN_PARTICIPANTS} bis ${MAX_PARTICIPANTS} eingeben.`;
+    participantsError.hidden = !showError;
+    return raw !== "" && valid ? n : null;
+  }
+
+  function update() {
+    const n = readParticipants();
+    const rules = selectedRules();
+    if (!rules || n === null) {
+      result.hidden = true;
+      return;
+    }
+
+    const counted = countedParticipants(n, rules);
+    note.textContent = `Für die Punkte gewertet als ${counted} Teilnehmer.`;
+    note.hidden = counted === n || n === 1;
+
+    rows.replaceChildren(...Array.from({ length: n }, (_, i) => {
+      const row = document.createElement("tr");
+      row.insertCell().textContent = i + 1;
+      row.insertCell().textContent = points(i + 1, n, rules);
+      return row;
+    }));
+    result.hidden = false;
+  }
+
+  function onTypeChange() {
+    const categories = TOURNAMENTS[typeSelect.value]?.categories;
+    const previous = categorySelect.value;
+    categorySelect.replaceChildren();
+    categoryField.hidden = !categories;
+    if (categories) {
+      for (const [value, { label }] of Object.entries(categories)) {
+        addOption(categorySelect, value, label);
+      }
+      // Kategorie beim Wechsel behalten, sofern es sie dort auch gibt.
+      if (previous in categories) categorySelect.value = previous;
+    }
+    update();
+  }
+
+  for (const [value, { label }] of Object.entries(TOURNAMENTS)) {
+    addOption(typeSelect, value, label);
+  }
+  typeSelect.addEventListener("change", onTypeChange);
+  categorySelect.addEventListener("change", update);
+  participantsInput.addEventListener("input", update);
+  document.getElementById("form").addEventListener("submit", (event) => event.preventDefault());
+</script>
+</body>
+</html>
